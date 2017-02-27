@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 from io import BytesIO
+from functools import wraps
 
 import pyaudio
 import requests
@@ -21,7 +22,25 @@ STREAMS = {rate: PA.open(format=FORMAT, channels=CHANNELS, rate=rate, output=Tru
 logger = logging.getLogger('debug')
 
 
+def update_called(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        item = func(self, *args, **kwargs)
+        if item is not None:
+            self.song = item
+
+    return wrapper
+
+
 class SongBase:
+    METADATA_CONVERSIONS = {'Title': 'title',
+                            'Artist': 'artist',
+                            'Track': 'track',
+                            'Album': 'album',
+                            'Year': 'year',
+                            'Duration': 'duration',
+                            'Band': 'band'}
+
     __slots__ = ['song', 'db_handler', '_duration', '_formatted_duration']
 
     def __init__(self, song_item, db):
@@ -69,6 +88,7 @@ class SongBase:
         return self.song.file_type
 
     @file_type.setter
+    @update_called
     def file_type(self, file_type):
         self.db_handler.update(self.song, 'file_type', file_type)
 
@@ -77,6 +97,7 @@ class SongBase:
         return self.song.name
 
     @name.setter
+    @update_called
     def name(self, name):
         self.db_handler.update(self.song, 'name', name)
 
@@ -85,6 +106,7 @@ class SongBase:
         return self.song.link
 
     @link.setter
+    @update_called
     def link(self, link):
         self.db_handler.update(self.song, 'link', link)
 
@@ -93,6 +115,7 @@ class SongBase:
         return self.song.play_count
 
     @play_count.setter
+    @update_called
     def play_count(self, play_count):
         self.db_handler.update(self.song, 'play_count', play_count)
 
@@ -101,6 +124,7 @@ class SongBase:
         return self.song.rating
 
     @rating.setter
+    @update_called
     def rating(self, rating):
         self.db_handler.update(self.song, 'rating', rating)
 
@@ -109,6 +133,7 @@ class SongBase:
         return self.song.duration if self._duration is None else self._duration
 
     @duration.setter
+    @update_called
     def duration(self, duration):
         self.db_handler.update(self.song, 'duration', duration)
         self._duration = duration
@@ -118,6 +143,7 @@ class SongBase:
         return self.song.title
 
     @title.setter
+    @update_called
     def title(self, title):
         self.db_handler.update(self.song, 'title', title)
 
@@ -126,6 +152,7 @@ class SongBase:
         return self.song.album
 
     @album.setter
+    @update_called
     def album(self, album):
         self.db_handler.update(self.song, 'album', album)
 
@@ -134,6 +161,7 @@ class SongBase:
         return self.song.track
 
     @track.setter
+    @update_called
     def track(self, track: int):
         self.db_handler.update(self.song, 'track', track)
 
@@ -142,6 +170,7 @@ class SongBase:
         return self.song.artist
 
     @artist.setter
+    @update_called
     def artist(self, artist):
         self.db_handler.update(self.song, 'artist', artist)
 
@@ -150,6 +179,7 @@ class SongBase:
         return self.song.year
 
     @year.setter
+    @update_called
     def year(self, year: int):
         self.db_handler.update(self.song, 'year', year)
 
@@ -158,6 +188,7 @@ class SongBase:
         return self.song.band
 
     @band.setter
+    @update_called
     def band(self, band):
         self.db_handler.update(self.song, 'band', band)
 
@@ -166,6 +197,7 @@ class SongBase:
         return self.song.cover_art
 
     @cover_art.setter
+    @update_called
     def cover_art(self, cover_art):
         self.db_handler.update(self.song, 'cover_art', cover_art)
 
@@ -178,19 +210,12 @@ class SongBase:
         return self.song.metadata_set
 
     @metadata_set.setter
+    @update_called
     def metadata_set(self, is_set: bool):
         self.db_handler.update(self.song, 'metadata_set', is_set)
 
 
 class Song(SongBase):
-    METADATA_CONVERSIONS = {'Title': 'title',
-                            'Artist': 'artist',
-                            'Track': 'track',
-                            'Album': 'album',
-                            'Year': 'year',
-                            'Duration': 'duration',
-                            'Band': 'band'}
-
     __slots__ = ['index', 'downloader', '_ffmpeg', '_stream', 'metadata',
                  '_formatted_duration', 'info', 'future', '_dl_error','_dl_ready',
                  '_downloading', 'on_cover_art_changed', 'after_download']
@@ -385,7 +410,7 @@ class Song(SongBase):
     def set_cover_art(self, file: str=None, forced=False):
         # This doesn't commit changes
         if file is None:
-            if not forced and self.cover_art is not None:
+            if not forced and self.cover_art is not None and os.path.exists(self.cover_art):
                 return
 
             try:
@@ -507,6 +532,7 @@ class Song(SongBase):
         return self.song.cover_art
 
     @cover_art.setter
+    @update_called
     def cover_art(self, cover_art):
         self.db_handler.update(self.song, 'cover_art', cover_art)
         if callable(self.on_cover_art_changed):

@@ -89,16 +89,16 @@ Base = declarative_base(cls=SongBase)
 
 # Class that has all the info for the song
 class FullSong:
-    play_count = Column(INTEGER, default=0)  # How many times the song has been played
-    rating = Column(INTEGER, default=0)
-    duration = Column(Float, default=None)
-    file_type = Column(String, default='link')
     title = Column(String, default=None)
+    artist = Column(String, default=None)
+    duration = Column(Float, default=None)
     album = Column(String, default=None)
     track = Column(INTEGER, default=None)
-    artist = Column(String, default=None)
     year = Column(INTEGER, default=None)
     band = Column(String, default=None)
+    play_count = Column(INTEGER, default=0)  # How many times the song has been played
+    rating = Column(INTEGER, default=0)
+    file_type = Column(String, default='link')
     cover_art = Column(String, default=None)
     added = Column(INTEGER)  # Follows format YYYYMMDD
     metadata_set = Column(Boolean, default=False)
@@ -140,7 +140,7 @@ class DBHandler:
         self.session_manager = session_manager
         self._load_history()
         self._second_queue = deque()
-        self.queue_pos = self.session_manager.index
+        #self.queue_pos = self.session_manager.index
         self._real_queue = deque()
         self.load_queue('data/queue.dat', self._real_queue)
         self.load_queue('data/second_q.dat', self._second_queue)
@@ -172,6 +172,12 @@ class DBHandler:
 
             for item in _history:
                 self.history.append(create_from_state_dict(DBSong, item))
+
+    @thread_local_session
+    def get_state_updated(self, instance, session=None):
+        instance = session.query(type(instance)).filter_by(id=instance.id).first()
+        if instance is not None:
+                return get_state_dict(instance)
 
     @staticmethod
     def delete_history():
@@ -217,14 +223,16 @@ class DBHandler:
     def clear_second_queue(self):
         self._second_queue.clear()
 
-    @staticmethod
-    def save_list(queue, filename):
+    @thread_local_session
+    def save_list(self, queue, filename, session=None):
         if len(queue) == 0:
             return
 
         _queue = SongQueue(cls=type(queue[0]))
         for inst in queue:
-            _queue.append(get_state_dict(inst))
+            state_dict = self.get_state_updated(inst, session=session)
+            if state_dict is not None:
+                _queue.append(state_dict)
 
         with open(filename, 'wb') as f:
             pickle.dump(_queue, f)
@@ -248,7 +256,6 @@ class DBHandler:
         session.commit()
         self.Session.remove()
 
-        return
         self.save_history()
         self.save_queue()
         print(self._second_queue)
@@ -319,7 +326,7 @@ class DBHandler:
         return items.filter_by(**filters).all()
 
     @thread_local_session
-    def set_up_shuffled_queue(self, query=None, session=None):
+    def set_up_shuffled_queue(self, query=None, session=None, cls=QSong):
         if query is None:
             query = session.query(DBSong)
 
@@ -330,7 +337,7 @@ class DBHandler:
 
         shuffle(songs)
         for song in songs:
-            self.add_song(song.name, song.link, cls=QSong, commit=False, real_id=song.id)
+            self.add_song(song.name, song.link, cls=cls, commit=False, real_id=song.id, session=session)
 
         session.commit()
         return session.query(QSong)
@@ -610,7 +617,9 @@ class DBHandler:
     @thread_local_session
     def update(self, db_item, name, value, session=None):
         DBItem = type(db_item)
-        session.query(DBItem).filter(DBItem.id == db_item.id).update({name: value})
+        item = session.query(DBItem).filter(DBItem.id == db_item.id)
+        item.update({name: value})
+        return item
 
 
 class ActionQueue(threading.Thread):

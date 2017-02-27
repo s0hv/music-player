@@ -1,6 +1,7 @@
 import audioop
 import logging
 import os
+import cProfile
 import shlex
 import subprocess
 import sys
@@ -98,7 +99,6 @@ class StreamPlayer(threading.Thread):
                 self._stream_finished.set()
 
     def _start_playing(self):
-        self._start = self.stream.get_time()
         if self.remove_start_silence:
             # Drop all data that is silent
             while not self._end.is_set():
@@ -491,9 +491,9 @@ class CMDPlayer(MusicPlayer):
 class GUIPlayer(MusicPlayer):
     IN_ORDER = 0
     SHUFFLED = 1
-    COMPLETELY_RANDOM = 2
+    AUTO_DJ = 2
 
-    def __init__(self, duration_fn, on_next, on_start, session, mode=COMPLETELY_RANDOM, *args, **kwargs):
+    def __init__(self, duration_fn, on_next, on_start, session, mode=AUTO_DJ, *args, **kwargs):
         """
 
         Args:
@@ -526,7 +526,7 @@ class GUIPlayer(MusicPlayer):
 
         self.queue_modes = {self.IN_ORDER: 'd',
                             self.SHUFFLED: 'get_from_shuffled',
-                            self.COMPLETELY_RANDOM: 'get_random_song'}
+                            self.AUTO_DJ: 'get_random_song'}
         self.queues = {self.SHUFFLED: 'queue'}
         self._next_queue = LockedQueue()
         self.current = None
@@ -602,7 +602,8 @@ class GUIPlayer(MusicPlayer):
 
         if song_item is not None:
             self._next_queue.append(song_item)
-            self.on_next(song_item.song, self.queue_mode == self.SHUFFLED, self.index, False)
+            self.on_next.emit(song_item.song, self.queue_mode == self.SHUFFLED,
+                              self.index, False, self.queue_mode == self.AUTO_DJ)
 
         f = open('errors.txt', 'a')
 
@@ -623,8 +624,8 @@ class GUIPlayer(MusicPlayer):
             self.current.song.download_song()
             logger.debug('DL complete. Calling on next')
             try:
-                self.on_next(self.current.song, self.queue_mode == self.SHUFFLED and self.current.song.index >= 0,
-                             self.current.song.index)
+                self.on_next.emit(self.current.song, self.queue_mode == self.SHUFFLED and self.current.song.index >= 0,
+                                  self.current.song.index, True, self.queue_mode == self.AUTO_DJ)
             except Exception as e:
                 logger.exception('on_next exception %s' % e)
 
@@ -643,7 +644,7 @@ class GUIPlayer(MusicPlayer):
             self.play_current(after=self.on_stop, stderr=f,
                               remove_start_silence=True,
                               remove_end_silence=True,
-                              on_write_frame=self.duration_fn)
+                              on_write_frame=self.duration_fn, daemon=True)
             logger.debug('Started player')
             self.get_next()
 

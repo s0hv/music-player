@@ -73,7 +73,6 @@ def update_song(song, forced=False, exiftool=None):
             if 'upload_date' in song.info:
                 song.year = int(song.info['upload_date'][:4])
 
-    song.handler.db_action('commit_all')
     song.metadata_set = check_if_metadata_set(song)
     return True
 
@@ -102,6 +101,7 @@ class BaseMetadataUpdater(threading.Thread):
 
     def stop(self):
         self._stopper.set()
+        self._update_metadata.set()
 
     def start_update(self):
         self._update_metadata.set()
@@ -164,12 +164,10 @@ class BaseMetadataUpdater(threading.Thread):
                 if 'upload_date' in song.info:
                     song.year = int(song.info['upload_date'][:4])
 
-        song.handler.db_action('commit_all')
         song.metadata_set = check_if_metadata_set(song)
         return True
 
-    @classmethod
-    def _updater_loop(cls):
+    def _updater_loop(self):
         pass
 
     def run(self):
@@ -186,10 +184,15 @@ class MetadataUpdater(BaseMetadataUpdater):
     def _updater_loop(self):
         while self.running():
             self._update_metadata.wait()
+            if not self.running():
+                break
+
             self._exiftool.start()
 
             while len(self._songs) > 0:
                 self._do_loop()
+                if not self.running():
+                    break
 
             self._update_metadata.clear()
             self._exiftool.terminate()

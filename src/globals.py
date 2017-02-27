@@ -7,6 +7,11 @@ class GV:
     Queues = {0: 'main_queue',
               1: 'secondary_queue',
               2: 'marked'}
+    TableColumns = {'id': {}, 'title': {'editable': True, 'fallback': 'name'},
+                    'artist': {'editable': True}, 'duration': {'editable': True},
+                    'album': {'editable': True}, 'track': {'editable': True},
+                    'year': {'editable': True}, 'band': {'editable': True},
+                    'play_count': {'editable': True}, 'rating': {'editable': True}}
 
 
 class DefaultSettings:

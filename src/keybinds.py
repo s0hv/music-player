@@ -1,9 +1,12 @@
 import logging
 import threading
+from time import sleep
 
 import pyHook
 from pyHook.HookManager import GetKeyState
 from pyHook.HookManager import HookConstants
+
+from PyQt5.QtCore import QThread
 
 import pythoncom
 
@@ -138,12 +141,13 @@ class KeyBind:
         return s
 
 
-class KeyBinds(threading.Thread):
+class KeyBinds:
     def __init__(self, hwnd=0, global_binds=False, **kwargs):
-        super().__init__(**kwargs)
+        #super().__init__(**kwargs)
         self.global_binds = global_binds
         self._hwnd = hwnd
         self.keybinds = {}
+        self._init()
 
     def _init(self):
         self.hm = pyHook.HookManager()
@@ -241,9 +245,8 @@ class KeyBinds(threading.Thread):
 
         return True
 
-    def run(self):
-        self._init()
-        pythoncom.PumpMessages()
+    def pump_messages(self):
+        pythoncom.PumpWaitingMessages()
 
     def stop(self):
         self.hm.UnhookKeyboard()

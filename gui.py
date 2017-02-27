@@ -7,8 +7,8 @@ import threading
 from collections import deque
 from math import ceil
 from random import shuffle
-import sys
 
+import pythoncom
 import qdarkstyle
 import requests
 from PyQt5 import QtCore, QtGui
@@ -19,14 +19,14 @@ from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QApplication,
                              QGraphicsDropShadowEffect, QGraphicsPixmapItem,
                              QGraphicsScene, QListWidget, QListWidgetItem, QStyledItemDelegate,
                              QMenu, QDialog, QLineEdit, QVBoxLayout, QFrame, QMessageBox,
-                             QMainWindow, QProxyStyle, QStyle, QDockWidget, QTableView,
+                             QMainWindow, QProxyStyle, QStyle, QDockWidget,
                              QStackedWidget)
 
 from src import settings as _settings
 from src.database import DBHandler, DBSong, attribute_names
 from src.downloader import DownloaderPool
 from src.globals import GV
-from src.gui.table_view import SQLAlchemyTableModel, Column
+from src.gui.table_view import SQLAlchemyTableModel, Column, SongTable
 from src.keybinds import KeyBinds, KeyBind, KeyCodes
 from src.metadata import MetadataUpdater
 from src.player import GUIPlayer
@@ -93,7 +93,7 @@ def apply_effect_to_pixmap(src: QPixmap, effect, extent=0, size: QSize=None):
 
     size = src.size() if size is None else size
     res = QImage(size + QSize(extent * 2, extent * 2), QImage.Format_ARGB32)
-    res.fill(QtCore.Qt.transparent)
+    res.fill(Qt.transparent)
     ptr = QPainter(res)
     scene.render(ptr, QRectF(), QRectF(-extent, -extent, size.width() + extent * 2, size.height() + extent*2))
     return res
@@ -275,6 +275,7 @@ class MediaControls(QHBoxLayout):
         self.dur.setText('00:00/{}'.format(self.total_dur))
         name, author = song.get_name_and_author()
         self.title.setText('{} - {}'.format(author, name))
+        self.rating.set_value(song.rating)
 
     def player_start(self, player_):
         self.playing = True
@@ -895,8 +896,8 @@ class SongList(BaseListWidget):
 
         self.loaded_pages.append((page, page_index))
         for item in page:
-            item.load_icon()
             item.update_info()
+            item.load_icon()
 
     @staticmethod
     def unload_page(page):
@@ -965,21 +966,6 @@ class SongList(BaseListWidget):
         return self._add_item(item, is_selected)
 
 
-class StarRating(QWidget):
-    def __init__(self, rating=0, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.rating = rating
-        self.setMouseTracking(True)
-        self.setAutoFillBackground(True)
-
-    def mouseMoveEvent(self, event):
-        pos = event.x()
-        print(pos)
-
-    def mouseReleaseEvent(self, event):
-        print(event.x())
-
-
 class SongItem(QListWidgetItem):
     def __init__(self, song, icon_displayed=False, *args):
         super().__init__(*args)
@@ -1018,6 +1004,7 @@ class SongItem(QListWidgetItem):
         if img is None or self.img == img:
             return
 
+        self.img = img
         icons = getattr(session, 'icons', {})
         if img in icons:
             icon, uses = icons[img]
@@ -1028,15 +1015,13 @@ class SongItem(QListWidgetItem):
             icons[img] = (icon, 1)
 
         self.del_from_icons()
-
-        self.img = img
         self.setIcon(icon)
 
     def update_icon(self, song=None):
         if not self.loaded:
             return
 
-        self._load_icon()
+        self.load_icon()
 
     def unload_info(self):
         self.setText('')
@@ -1045,6 +1030,7 @@ class SongItem(QListWidgetItem):
     def update_info(self, song=None):
         self.setText('{}\r\n{}'.format(*self.song.get_name_and_author()))
         self.setData(Qt.UserRole, self.song.duration_formatted)
+        self.update_icon()
 
 
 class SongItemDelegate(QStyledItemDelegate):
@@ -1064,7 +1050,7 @@ class SongItemDelegate(QStyledItemDelegate):
             if offset > 3:
                 break
 
-            s = s[:characters- offset]
+            s = s[:characters - offset]
             text_len = len(s)
 
             if text_len > 3:
@@ -1218,8 +1204,6 @@ class SongInfoBox(QFrame):
         self.title.setWordWrap(True)
         self.title.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
-        self.rating = RatingBar(on_change=set_rating)
-
         self.artist = QLabel()
         self.artist.setWordWrap(True)
         self.artist.setAlignment(Qt.AlignBottom | Qt.AlignLeft)
@@ -1228,7 +1212,6 @@ class SongInfoBox(QFrame):
         self.duration.setAlignment(Qt.AlignBottom | Qt.AlignRight)
 
         layout.addWidget(self.title, 0, 0, 1, 2)
-        layout.addWidget(self.rating, 0, 2, 1, 1)
         layout.addWidget(self.artist, 1, 0, 1, 2)
         layout.addWidget(self.duration, 1, 2, 1, 1)
         self.setLayout(layout)
@@ -1241,12 +1224,14 @@ class SongInfoBox(QFrame):
 
 
 class QueueWidget(QWidget):
+    song_changed = pyqtSignal(object, bool, int, bool, bool)
+
     def __init__(self, settings_, db_, player_, keybinds_, session_, media_controls, *args):
         super().__init__(*args)
 
         self.db = db_
         self.player = player_
-        self.player.on_next = self.on_change
+        self.player.on_next = self.song_changed
         self.kb = keybinds_
         self.session = session_
         self.settings = settings_
@@ -1284,6 +1269,7 @@ class QueueWidget(QWidget):
 
         queue = deque()
         index = self.settings.value('index', 0)
+        logger.debug(vars(session))
         db_queue = getattr(self.db, self.player.queues.get(self.player.queue_mode, 'history'))
         if callable(db_queue):
             db_queue = db_queue()
@@ -1350,6 +1336,7 @@ class QueueWidget(QWidget):
         layout.addLayout(h, 0, 0, 1, 4)
         self.setLayout(layout)
         logger.debug('Layout complete')
+        self.song_changed.connect(self.on_change)
 
     def change_rating(self, score):
         index = getattr(self.session, 'index', None)
@@ -1366,8 +1353,8 @@ class QueueWidget(QWidget):
         return requests.get(url).content
 
     def on_change(self, song, in_list=False, index=0, force_repaint=True, add=False):
-        setattr(self.session, 'cover_art', song.cover_art)
         song.set_cover_art()
+        setattr(self.session, 'cover_art', song.cover_art)
 
         item = None
         if in_list:
@@ -1381,7 +1368,7 @@ class QueueWidget(QWidget):
                 item.setData(Qt.UserRole, song.duration_formatted)
                 item.setText('{}\r\n{}'.format(*song.get_name_and_author()))
 
-                setattr(session, 'index', index)
+                setattr(self.session, 'index', index)
                 self.settings.setValue('index', index)
 
         elif add:
@@ -1408,7 +1395,6 @@ class QueueWidget(QWidget):
             logger.debug('Changing cover_art to %s' % img)
             self.cover_art.change_pixmap(img, force_repaint)
 
-        self.song_info.rating.set_value(song.rating, force_repaint)
         if item is not None:
             logger.debug('Setting icon to %s' % img)
             item.setIcon(QIcon(img))
@@ -1451,12 +1437,10 @@ class MainWindow(QMainWindow):
         self.queue_widget = QueueWidget(settings_, db_, player_, keybinds_, session_, self.media_controls)
         self.queue_widget_index = self.main_stack.insertWidget(-1, self.queue_widget)
 
-        self.table_view = QTableView()
-        self.table_view.setSortingEnabled(True)
-        columns = [Column(key, getattr(DBSong, key), key) for key in attribute_names(DBSong)]
+        columns = [Column(key, getattr(DBSong, key), key, **GV.TableColumns[key])
+                   for key in attribute_names(DBSong) if key in GV.TableColumns.keys()]
         model = SQLAlchemyTableModel(db_, columns, self.db.items(DBSong))
-        self.table_view.setModel(model)
-        self.table_view.setEditTriggers(QTableView.NoEditTriggers)
+        self.table_view = SongTable(model)
         self.table_view_index = self.main_stack.insertWidget(-1, self.table_view)
 
         self.setCentralWidget(self.main_stack)
@@ -1527,6 +1511,7 @@ logger.addHandler(handler)
 
 
 if __name__ == "__main__":
+
     app = QApplication(sys.argv)
     app.setApplicationName('Music player')
     app.setOrganizationName('s0hvaperuna')
@@ -1539,30 +1524,41 @@ if __name__ == "__main__":
 
     metadata_updater = MetadataUpdater(session)
     metadata_updater.start()
-    db = DBHandler('yt', session)
+    db = DBHandler('yttest', session)
 
-    player = GUIPlayer(None, None, None, session, GUIPlayer.SHUFFLED, db, 0.2)
+    player = GUIPlayer(None, None, None, session, GUIPlayer.SHUFFLED, db, 0.2, daemon=True)
     keybinds = KeyBinds(global_binds=True)
 
-    keybinds.add_keybind(KeyBind(ord('3'), lambda: player.play_next_song(),
+    main_window = MainWindow(settings, db, player, keybinds, session)
+
+    def close_event(lock=None):
+        player.exit_player(lock)
+        main_window.close()
+
+    keybinds.add_keybind(KeyBind(ord('3'), player.play_next_song,
                                  'Skip song', modifiers=(KeyCodes.id_from_key('ctrl'),)))
-    keybinds.add_keybind(KeyBind(109, lambda: player.change_volume(),
+    keybinds.add_keybind(KeyBind(KeyCodes.id_from_key('subtract'), player.change_volume,
                                  'Volume down'))
-    keybinds.add_keybind(KeyBind(107, lambda: player.change_volume(True),
+    keybinds.add_keybind(KeyBind(KeyCodes.id_from_key('add'), lambda: player.change_volume(True),
                                  'Volume up'))
-    keybinds.add_keybind(KeyBind(101, lambda lock: player.exit_player(lock),
-                                 'Quit player', threaded=True))
+    keybinds.add_keybind(KeyBind(KeyCodes.id_from_key('numpad 5'), close_event,
+                                 'Quit player', threaded=True,
+                                 modifiers=(KeyCodes.id_from_key('ctrl'),)))
 
     player.start()
     session.start()
-    keybinds.start()
 
-    logger.debug(vars(session))
     app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
-    main_window = MainWindow(settings, db, player, keybinds, session)
     at_exit(run_funcs_on_exit, [(session.save_session, (), {}), (db.shutdown, (), {})])
     main_window.show()
     db.delete_history()
+
+    timer = QTimer()
+    # Message pump has to be on the same thread as Qt or keyboard presses might
+    # cause random crashes.
+    timer.timeout.connect(keybinds.pump_messages)
+    timer.setInterval(10)
+    timer.start()
 
     app.exec_()
 

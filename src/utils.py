@@ -158,7 +158,10 @@ def run_on_exit(func, *args, **kwargs):
     print('Cleaning up before shutting down. Please wait.')
     func(*args, **kwargs)
     print('Exiting app')
-    os._exit(0)
+    if kwargs.pop('__os_exit', False):
+        os._exit(0)
+    else:
+        sys.exit()
 
 
 def run_funcs_on_exit(funcs, *args, **kwargs):
