@@ -3,6 +3,7 @@ import os
 import shlex
 import subprocess
 import sys
+import warnings
 from itertools import zip_longest
 from signal import *
 
@@ -104,25 +105,59 @@ def get_duration(file):
     return dur
 
 
-def get_supported_formats():
-    path = os.path.join(os.getcwd(), 'cache', 'formats.txt')
+def read_formats(path):
     if os.path.exists(path):
         with open(path, 'r') as f:
             lines = f.read().split('\n')
         return lines
 
-    p = subprocess.Popen('ffmpeg -formats'.split(' '), stdout=subprocess.PIPE)
+
+def get_supported_formats():
+    path = os.path.join(os.getcwd(), 'cache', 'formats.txt')
+    lines = read_formats(path)
+    if lines is not None:
+        return
+
+    p = subprocess.Popen('ffmpeg -demuxers'.split(' '), stdout=subprocess.PIPE)
     out, err = p.communicate()
     out = out.decode('utf-8')
     formats = []
-    for l in out.split('\r\n ')[4:]:
-        if 'D' in l[0:1]:
+    for l in out.splitlines()[4:]:
+        l = l.strip()
+        try:
             formats.append(l[3:].split(' ')[0])
+        except Exception as e:
+            print('failed to add format %s\n%s' % (l, e))
 
     with open(path, 'w') as f:
         f.write('\n'.join(formats) + '\n')
 
     return formats
+
+
+def get_supported_audio_formats():
+    audio_formats = os.path.join(os.getcwd(), 'src', 'audio_format_list.txt')
+    if os.path.exists(audio_formats):
+        warnings.warn('audio_format_list.txt not found in src folder')
+        return get_supported_formats()
+
+    supported_formats = os.path.join(os.getcwd(), 'cache', 'audio_formats.txt')
+    if not os.path.exists(supported_formats):
+        with open(supported_formats) as f:
+            supported = set(f.read().split('\n'))
+
+        with open(audio_formats) as f:
+            listed = set(f.read().split('\n'))
+
+        formats = supported.intersection(listed)
+
+        with open(supported_formats, 'w') as f:
+            f.write('\n'.join(formats) + '\n')
+
+        return list(formats)
+
+    else:
+        return read_formats(supported_formats)
 
 
 def get_metadata(file):

@@ -413,6 +413,7 @@ class Song(SongBase):
 
     def set_cover_art(self, file: str=None, forced=False):
         if file is None:
+            self.refresh()
             if not forced and self.cover_art is not None and os.path.exists(self.cover_art):
                 return
 
