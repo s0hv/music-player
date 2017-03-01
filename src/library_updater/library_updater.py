@@ -4,6 +4,9 @@ from os.path import join
 from src.utils import get_supported_audio_formats
 
 from src.database import DBSong
+from src.metadata import update_song
+from src.utils import path_leaf
+from src.exiftool import ExifTool
 
 
 class LibraryUpdater(threading.Thread):
@@ -30,7 +33,22 @@ class LibraryUpdater(threading.Thread):
 
     def _updater_loop(self):
         # Do not call this outside of run
-        pass
+        session = self.db.get_thread_local_session()
+        query = session.query(DBSong).filter_by(file_type='file')
+        exif = ExifTool()
+        exif.start()
+
+        for directory in self.session.scanned_dirs:
+            new, deleted = directory.check_changes
+            for file in new:
+                path = join(directory.directory, file)
+                item = query.filter_by(link=path).first()
+                if item is None:
+                    item = self.db.add_song(path_leaf(path), path, item_type='file')
+                    update_song(item, exiftool=exif)
+
+        exif.terminate()
+
 
     def run(self):
         self._updater_loop()
@@ -43,10 +61,10 @@ class Dir:
         self.old = set() if old is None else old
 
     def check_changes(self):
-        if not os.path.exists(self.directory):
-            return self.old
-
         new = set()
+        if not os.path.exists(self.directory):
+            return new, self.old
+
         for root, dir, files in os.walk(self.directory):
             path = os.path.relpath(root, self.directory)
             for file in files:

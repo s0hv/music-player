@@ -6,6 +6,7 @@ import sys
 import warnings
 from itertools import zip_longest
 from signal import *
+import ntpath
 
 from PIL import Image, ImageChops
 
@@ -51,6 +52,12 @@ def concatenate_numbers(x, *y):
         n += str(num)
 
     return int(n)
+
+
+# http://stackoverflow.com/a/8384788/6046713
+def path_leaf(path):
+    head, tail = ntpath.split(path)
+    return tail or ntpath.basename(head)
 
 
 def parse_duration(current, total=None, decimals=0):
