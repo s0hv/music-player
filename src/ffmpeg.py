@@ -4,6 +4,9 @@ import re
 
 
 class FFmpeg:
+    __slots__ = ['ffmpeg', 'file', 'channels', 'samplerate', '_process',
+                 'running', 'filters', 'before_options', '_cmd']
+
     def __init__(self, file=None, path='ffmpeg', before_options='', channels=2,
                  samplerate=44100):
         self.ffmpeg = path

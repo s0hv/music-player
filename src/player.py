@@ -1,7 +1,6 @@
 import audioop
 import logging
 import os
-import cProfile
 import shlex
 import subprocess
 import sys
@@ -14,11 +13,10 @@ import pyaudio
 
 from src import database
 from src.downloader import DownloaderPool
-from src.song import Song
-from src import song as _song
 from src.globals import GV
-from src.utils import print_info, parse_duration, get_duration
 from src.queue import LockedQueue
+from src.song import Song
+from src.utils import print_info, get_duration
 
 logger = logging.getLogger('debug')
 
@@ -539,14 +537,16 @@ class GUIPlayer(MusicPlayer):
         self._next_queue.lock()
         if song_item is None:
             try:
-                song_item = self.queue[idx]
+                song = self.queue[idx]
             except IndexError:
                 self._next_queue.unlock()
                 return
+        else:
+            song = song_item.song
 
         logger.debug('skip_to %s' % idx)
         print(song_item)
-        self._next_queue.force_append(song_item)
+        self._next_queue.force_append(song)
         self.db.queue_pos = idx + 1
         self.index = idx
         self.play_next_song()
@@ -561,8 +561,8 @@ class GUIPlayer(MusicPlayer):
         song = self.db.get_temp_song(info.get('title', 'Untitled'),
                                      info.get('webpage_url'), item_type='link')
 
-        item = DummyItem(Song(song, self.db, self.session.downloader))
-        item.song.info = info
+        item = Song(song, self.db, self.session.downloader)
+        item.info = info
         self._next_queue.lock()
         self._next_queue.force_append(item)
         self.play_next_song()
@@ -576,7 +576,7 @@ class GUIPlayer(MusicPlayer):
             self.unpaused.clear()
             return
 
-        song.song.download_song()
+        song.download_song()
         self._next_queue.append(song)
 
     def _init(self):
@@ -587,22 +587,22 @@ class GUIPlayer(MusicPlayer):
     def _audio_loop(self):
         self._init()
 
-        song_item = None
+        song = None
         if self.queue_mode == self.SHUFFLED:
             try:
-                song_item = self.queue[self.index]
+                song = self.queue[self.index]
             except IndexError:
                 pass
         else:
             history = self.db.history
             try:
-                song_item = history.pop()
+                song = history.pop()
             except IndexError:
                 pass
 
-        if song_item is not None:
-            self._next_queue.append(song_item)
-            self.on_next.emit(song_item.song, self.queue_mode == self.SHUFFLED,
+        if song is not None:
+            self._next_queue.append(song)
+            self.on_next.emit(song, self.queue_mode == self.SHUFFLED,
                               self.index, False, self.queue_mode == self.AUTO_DJ)
 
         f = open('errors.txt', 'a')
@@ -620,25 +620,25 @@ class GUIPlayer(MusicPlayer):
                 self.get_next()
                 continue
 
-            logger.debug('Downloading song {} {}'.format(self.current.song.name, self.current.song.link))
-            self.current.song.download_song()
+            logger.debug('Downloading song {} {}'.format(self.current.name, self.current.link))
+            self.current.download_song()
             logger.debug('DL complete. Calling on next')
             try:
-                self.on_next.emit(self.current.song, self.queue_mode == self.SHUFFLED and self.current.song.index >= 0,
-                                  self.current.song.index, True, self.queue_mode == self.AUTO_DJ)
+                self.on_next.emit(self.current, self.queue_mode == self.SHUFFLED and self.current.index >= 0,
+                                  self.current.index, True, self.queue_mode == self.AUTO_DJ)
             except Exception as e:
                 logger.exception('on_next exception %s' % e)
 
-            if not self.current.song.dl_finished:
-                self.current.song.wait_until_ready()
+            if not self.current.dl_finished:
+                self.current.wait_until_ready()
 
-            if self.current.song.dl_error:
+            if self.current.dl_error:
                 logger.debug('DL error')
                 self.get_next()
                 continue
 
-            if self.current.song.index >= 0:
-                self.index = self.current.song.index
+            if self.current.index >= 0:
+                self.index = self.current.index
 
             logger.debug('Starting player')
             self.play_current(after=self.on_stop, stderr=f,
@@ -649,8 +649,8 @@ class GUIPlayer(MusicPlayer):
             self.get_next()
 
             self.wait_until_stop()
-            if self.stream_player.duration > 0.5 * self.current.song.duration:
-                self.current.song.play_count += 1
+            if self.stream_player.duration > 0.5 * self.current.duration:
+                self.current.play_count += 1
 
         try:
             f.close()
@@ -677,11 +677,11 @@ class GUIPlayer(MusicPlayer):
         if self.current is None:
             return
 
-        samplerate = self.current.song.create_stream()
-        self.current.song.ffmpeg.reset_seek()
-        self.current.song.ffmpeg.create_command()
-        p = self.current.song.ffmpeg.create_subprocess(stderr=stderr, stdin=stdin)
-        self.stream_player = StreamPlayer(p.stdout, self.current.song.stream, samplerate, self.volume, after=after, **kwargs)
+        samplerate = self.current.create_stream()
+        self.current.ffmpeg.reset_seek()
+        self.current.ffmpeg.create_command()
+        p = self.current.ffmpeg.create_subprocess(stderr=stderr, stdin=stdin)
+        self.stream_player = StreamPlayer(p.stdout, self.current.stream, samplerate, self.volume, after=after, **kwargs)
         self._not_playing.clear()
         self.stream_player.start()
         self.on_start(self)
@@ -695,7 +695,7 @@ class GUIPlayer(MusicPlayer):
 
     def on_stop(self):
         try:
-            self.current.song.ffmpeg.kill()
+            self.current.ffmpeg.kill()
         except Exception as e:
             print('Exception while stopping ffmpeg\n%s' % e)
 
@@ -736,8 +736,3 @@ class PrintDuration(threading.Thread):
             self._print_job()
         except:
             logger.exception('Exception in printing loop')
-
-
-class DummyItem:
-    def __init__(self, song):
-        self.song = song

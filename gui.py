@@ -8,7 +8,6 @@ from collections import deque
 from math import ceil
 from random import shuffle
 
-import pythoncom
 import qdarkstyle
 import requests
 from PyQt5 import QtCore, QtGui
@@ -22,7 +21,7 @@ from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QApplication,
                              QMainWindow, QProxyStyle, QStyle, QDockWidget,
                              QStackedWidget)
 
-from src import settings as _settings
+from src.settings import SettingsManager
 from src.database import DBHandler, DBSong, attribute_names
 from src.downloader import DownloaderPool
 from src.globals import GV
@@ -263,7 +262,7 @@ class MediaControls(QHBoxLayout):
         if self.player.current is None:
             index = self.player.index - 1
         else:
-            index = self.player.current.song.index - 1
+            index = self.player.current.index - 1
 
         self.player.skip_to(index)
         self.playing = False
@@ -283,7 +282,7 @@ class MediaControls(QHBoxLayout):
 
     def update_duration(self, stream_player):
         iteration = stream_player.duration
-        total = self.player.current.song.duration
+        total = self.player.current.duration
         if total is None:
             total = 1
 
@@ -305,9 +304,9 @@ class MediaControls(QHBoxLayout):
                 self.player.play_next_song()
                 return
 
-            total = self.player.current.song.duration
+            total = self.player.current.duration
             seconds = slider.value()/slider.maximum()*total
-            self.player.stream_player.seek(seconds, self.player.current.song.ffmpeg)
+            self.player.stream_player.seek(seconds, self.player.current.ffmpeg)
         finally:
             lock.release()
 
@@ -583,17 +582,22 @@ class SearchListWidget(BaseListWidget):
 
 
 class SongList(BaseListWidget):
-    def __init__(self, player_, session_, settings_, icons, cover_art):
+    items_updated = pyqtSignal(int)
+
+    def __init__(self, player_, session_, settings_manager_, icons, cover_art):
         super().__init__()
         self.last_doubleclicked = None
         self.player = player_
-        self.settings = settings_
+        self.settings_manager = settings_manager_
         self.icons = icons
         self.cover_art = cover_art
         self.setItemDelegate(SongItemDelegate(parent=self, paint_icons=self.settings.value('paint_icons', True)))
         self.itemClicked.connect(self.on_item_clicked)
         self.itemDoubleClicked.connect(self.on_doubleclick)
         self.session = session_
+
+        self.items = {GV.MainQueue: [], GV.SecondaryQueue: [], GV.MarkedQueue: []}
+        self.items_updated.connect(self.list_updated)
 
         self.timer = QTimer()
         self.icon_timer = QTimer()
@@ -612,6 +616,27 @@ class SongList(BaseListWidget):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.change_song)
 
+    @property
+    def settings(self):
+        return self.settings_manager.get_settings_instance()
+
+    def list_updated(self, queue_id):
+        if queue_id != self.current_queue:
+            return
+
+        self.load_current_queue()
+
+    @property
+    def current_items(self):
+        return self.items[self.current_queue]
+
+    def item_list(self, list_type=list):
+        q = list_type()
+        for i in range(self.count()):
+            q.append(self.item(i))
+
+        return q
+
     def scroll_to_selected(self):
         current = self.player.current
         if current is not None:
@@ -619,49 +644,40 @@ class SongList(BaseListWidget):
             self.load_items_by_index(current.song.index)
 
     def shuffle_queue(self):
-        items = self.session.queues.get(self.current_queue, deque())
+        items = self.item_list()
         shuffle(items)
         self.clear_items()
-        db_queue = deque()
+        queue = self.session.queues[self.current_queue]
+        queue.clear()
         for idx, item in enumerate(items):
             item.song.index = idx
-            db_queue.append(item.song.song)
             self.add_from_item(item)
-
-        db.set_queue(db_queue)
+            queue.append(item.song)
 
     def load_last_queue(self):
         self.change_selected(None)
         if self.current_queue == GV.MainQueue:
-            q = self.session.queues.get(GV.SecondaryQueue, deque())
             self.current_queue = GV.SecondaryQueue
             index = self.session.secondary_index
             self.session.main_index = self.session.index
         else:
-            q = self.session.queues.get(GV.MainQueue, deque())
             self.current_queue = GV.MainQueue
             index = self.session.main_index
             self.session.secondary_index = self.session.index
 
         self.session.index = index
 
-        settings.setValue('queue', self.current_queue)
-        self.clear_items()
-
-        for item in q:
-            self.add_from_item(item)
-
-        self.player.update_queue(self.current_queue, index)
+        self.settings.setValue('queue', self.current_queue)
+        self.load_current_queue()
         self.player.skip_to(index, self.item(index))
-
         self.load_items_by_index(index)
         self.scrollToItem(self.item(index))
 
     def load_current_queue(self):
-        self.reset_item_page()
-        q = self.session.queues.get(self.current_queue, deque())
-        for item in q:
-            self.addItem(item)
+        self.clear_items()
+        q = self.session.queues[self.current_queue]
+        for song in q:
+            item = self.add_list_item(song)
             self.add_to_item_page(item)
 
         self.load_current_index()
@@ -669,6 +685,7 @@ class SongList(BaseListWidget):
 
     def clear_items(self):
         self.currently_selected = None
+        self.current_items.clear()
         self.reset_item_page()
         while self.count() > 0:
             self.takeItem(0)
@@ -703,10 +720,9 @@ class SongList(BaseListWidget):
         if action == trim_action:
             try:
                 item.song.trim_cover_art()
-                item.setIcon(QIcon(item.song.cover_art))
                 main_window.update()
             except Exception as e:
-                print(e)
+                print('exception while trimming. %s' % e)
 
         elif action == cover_art_action:
             item.song.set_cover_art(forced=True)
@@ -743,17 +759,37 @@ class SongList(BaseListWidget):
     def clear_current_queue(self):
         self.clear_items()
         current = self.current_queue
-        queue = self.session.queues.get(current, deque())
+        queue = self.session.queues.get(current, [])
         queue.clear()
 
-        if current == GV.SecondaryQueue:
-            db.clear_second_queue()
+    def _add_from_info(self, info, link_getter=None):
+        songs = []
+        q = self.session.queues[GV.SecondaryQueue]
+        l = len(q)
+        session = db.get_thread_local_session()
+        for idx, entry in enumerate(info['entries']):
+            if callable(link_getter):
+                link = link_getter(entry)
+            else:
+                link = entry.get('webpage_url')
+            song = db.get_temp_song(entry.get('title', 'Untitled'),
+                                    link, item_type='link',
+                                    session=session, commit=False)
 
-        if current == GV.MarkedQueue:
-            pass
+            session.expunge(song)
+            item = Song(song, db, self.session.downloader, index=idx + l)
+            self.session.add_to_queue(item, queue=GV.SecondaryQueue)
+            songs.append(item)
 
-        if current == GV.MainQueue:
-            db.clear_main_queue()
+        session.commit()
+        session.close()
+        db.Session.remove()
+
+        if self.current_queue == GV.SecondaryQueue:
+            self.load_songs(songs)
+            self.load_items_by_page(self.item_page)
+        print('done')
+        metadata_updater.add_to_update(songs)
 
     def append_to_queue_future(self, future):
         info = future.result()
@@ -763,30 +799,7 @@ class SongList(BaseListWidget):
         if 'entries' not in info:
             return
 
-        songs = deque()
-        q = self.session.queues.get(GV.SecondaryQueue, deque())
-        l = len(q)
-        for idx, entry in enumerate(info['entries']):
-                song = db.get_temp_song(entry.get('title', 'Untitled'),
-                                        entry.get('webpage_url'), item_type='link')
-
-                db.add_to_second_queue(song)
-                item = Song(song, db, self.session.downloader, index=idx + l)
-                songs.append(item)
-
-        if self.current_queue == GV.SecondaryQueue:
-            items = self.load_songs(songs)
-            for item in items:
-                q.append(item)
-
-            self.load_items_by_page(self.item_page)
-        else:
-            for song in songs:
-                item = SongItem(song)
-                q.append(item)
-
-        print('done')
-        metadata_updater.add_to_update(q)
+        self._add_from_info(info)
 
     def _playlist_from_future(self, future):
         info = future.result()
@@ -799,33 +812,13 @@ class SongList(BaseListWidget):
         if 'entries' not in info:
             return
 
-        songs = deque()
-        for idx, entry in enumerate(info['entries']):
-                song = db.get_temp_song(entry.get('title', 'Untitled'),
-                                        'https://www.youtube.com/watch?v=%s' % entry.get('url'),
-                                        item_type='link')
+        def link(entry):
+            return 'https://www.youtube.com/watch?v=%s' % entry.get('id')
 
-                db.add_to_second_queue(song)
-                item = Song(song, db, self.session.downloader, index=idx)
-                print(item.name)
-                songs.append(item)
-
-        self.clear_items()
-        items = self.load_songs(songs)
-        q = self.session.queues.get(GV.SecondaryQueue, deque())
-        q.clear()
-        for item in items:
-            q.append(item)
-
-        self.player.update_queue(GV.SecondaryQueue)
-        idx = self.session.secondary_index
-        self.player.skip_to(idx)
-        self.session.index = idx
-        self.settings.setValue('index', idx)
-        metadata_updater.add_to_update(self.session.queues.get(GV.SecondaryQueue, deque()))
+        self._add_from_info(info, link)
 
     def load_songs(self, queue):
-        _queue = deque()
+        _queue = []
         for item in queue:
             _queue.append(self.add_list_item(item))
 
@@ -836,6 +829,7 @@ class SongList(BaseListWidget):
 
     def addItem(self, item, *args):
         super().addItem(item, *args)
+        self.current_items.append(item)
         if self.currently_selected is None:
             self.currently_selected = item
             item.setBackground(self.checked_color)
@@ -843,17 +837,18 @@ class SongList(BaseListWidget):
 
     def change_song(self):
         if self.last_doubleclicked is not None:
+            settings = self.settings
             index = self.indexFromItem(self.last_doubleclicked).row()
             self.player.skip_to(index, self.last_doubleclicked)
             self.session.index = index
-            self.settings.setValue('index', index)
+            settings.setValue('index', index)
 
             if self.current_queue == GV.MainQueue:
                 self.session.main_index = index
-                self.settings.setValue('main_index', index)
+                settings.setValue('main_index', index)
             elif self.current_queue == GV.SecondaryQueue:
                 self.session.secondary_index = index
-                self.settings.setValue('secondary_index', index)
+                settings.setValue('secondary_index', index)
 
     def on_doubleclick(self, item):
         if item is not None:
@@ -1184,7 +1179,7 @@ class RatingBar(QWidget):
 
 
 class SongInfoBox(QFrame):
-    def __init__(self, *args, set_rating=None, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.setLineWidth(0)
@@ -1226,7 +1221,7 @@ class SongInfoBox(QFrame):
 class QueueWidget(QWidget):
     song_changed = pyqtSignal(object, bool, int, bool, bool)
 
-    def __init__(self, settings_, db_, player_, keybinds_, session_, media_controls, *args):
+    def __init__(self, settings_manager_, db_, player_, keybinds_, session_, media_controls, *args):
         super().__init__(*args)
 
         self.db = db_
@@ -1234,7 +1229,7 @@ class QueueWidget(QWidget):
         self.player.on_next = self.song_changed
         self.kb = keybinds_
         self.session = session_
-        self.settings = settings_
+        self.settings_manager = settings_manager_
 
         logger.debug('Creating widgets')
         self.media_controls = media_controls
@@ -1251,10 +1246,10 @@ class QueueWidget(QWidget):
         size_policy = QSizePolicy()
         size_policy.setHorizontalStretch(6)
         cover_art.setSizePolicy(size_policy)
-        self.song_info = SongInfoBox(set_rating=self.change_rating)
+        self.song_info = SongInfoBox()
 
         icons = {}
-        song_list = SongList(player_, session_, settings_, icons, cover_art)
+        song_list = SongList(player_, session_, settings_manager_, icons, cover_art)
         size_policy = QSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
         size_policy.setHorizontalStretch(3)
         size_policy.setVerticalStretch(10)
@@ -1267,53 +1262,34 @@ class QueueWidget(QWidget):
         self.list = song_list
         logger.debug('Songlist added. now adding songs.')
 
-        queue = deque()
         index = self.settings.value('index', 0)
-        logger.debug(vars(session))
         db_queue = getattr(self.db, self.player.queues.get(self.player.queue_mode, 'history'))
         if callable(db_queue):
-            db_queue = db_queue()
-
-        for idx, item in enumerate(db_queue):
-            song = Song(item, self.db, self.session.downloader, index=idx)
-            item = SongItem(song)
-            item.update_info()
-            queue.append(item)
-
-        queues = self.session.queues
-        queues[GV.MainQueue] = queue
+            db_queue()
 
         setattr(self.session, 'icons', icons)
 
-        secondary_q = deque()
-        for idx, item in enumerate(self.db.secondary_queue()):
-            song = Song(item, self.db, session.downloader, index=index)
-            item = SongItem(song)
-            item.update_info()
-            secondary_q.append(item)
-
-        queues[GV.SecondaryQueue] = secondary_q
-        self.list.current_queue = settings.value('queue', GV.MainQueue)
+        self.list.current_queue = self.settings.value('queue', GV.MainQueue)
         logger.debug('Songs added')
         self.list.load_current_queue()
         player.update_queue(self.list.current_queue)
 
-        song_list = secondary_q if self.list.current_queue == GV.SecondaryQueue else queue
         try:
-            item = song_list[index]
+            item = self.list.item(index)
         except IndexError:
             pass
         else:
-            self.list.scrollToItem(item)
-            self.list.load_items_by_index(index)
-            self.list.change_selected(item)
-            logger.debug('Scrolled to index %s' % index)
-            if item.song.cover_art is not None:
-                cover_art.change_pixmap(item.song.cover_art)
+            if item is not None:
+                self.list.scrollToItem(item)
+                self.list.load_items_by_index(index)
+                self.list.change_selected(item)
+                logger.debug('Scrolled to index %s' % index)
+                if item.song.cover_art is not None:
+                    cover_art.change_pixmap(item.song.cover_art)
 
-            self.media_controls.song_changed(item.song)
-            self.song_info.update_info(item.song)
-            self.player.skip_to(index, item)
+                self.media_controls.song_changed(item.song)
+                self.song_info.update_info(item.song)
+                self.player.skip_to(index, item)
 
         cover_art.setBaseSize(400, 400)
         cover_art.setMinimumSize(100, 100)
@@ -1338,6 +1314,10 @@ class QueueWidget(QWidget):
         logger.debug('Layout complete')
         self.song_changed.connect(self.on_change)
 
+    @property
+    def settings(self):
+        return self.settings_manager.get_settings_instance()
+
     def change_rating(self, score):
         index = getattr(self.session, 'index', None)
         if index is None:
@@ -1353,8 +1333,11 @@ class QueueWidget(QWidget):
         return requests.get(url).content
 
     def on_change(self, song, in_list=False, index=0, force_repaint=True, add=False):
+        try:
+            song.refresh()
+        except Exception as e:
+            print(e)
         song.set_cover_art()
-        setattr(self.session, 'cover_art', song.cover_art)
 
         item = None
         if in_list:
@@ -1395,6 +1378,8 @@ class QueueWidget(QWidget):
             logger.debug('Changing cover_art to %s' % img)
             self.cover_art.change_pixmap(img, force_repaint)
 
+        setattr(self.session, 'cover_art', img)
+
         if item is not None:
             logger.debug('Setting icon to %s' % img)
             item.setIcon(QIcon(img))
@@ -1405,7 +1390,7 @@ class QueueWidget(QWidget):
             self.update()
 
         # scrollToItem has to be called after self.update() or the program crashes
-        if settings.value('scroll_on_change', True) and item is not None:
+        if self.settings.value('scroll_on_change', True) and item is not None:
             self.list.scrollToItem(item)
 
         logger.debug('Items added and cover art changed')
@@ -1423,18 +1408,18 @@ class ProxyStyle(QProxyStyle):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings_, db_, player_, keybinds_, session_, *args):
+    def __init__(self, settings_manager_, db_, player_, keybinds_, session_, *args):
         super().__init__(*args)
 
         self.db = db_
         self.player = player_
         self.kb = keybinds_
         self.session = session_
-        self.settings = settings_
+        self.settings_manager = settings_manager_
         self.media_controls = MediaControls(self.player)
         self.main_stack = QStackedWidget()
 
-        self.queue_widget = QueueWidget(settings_, db_, player_, keybinds_, session_, self.media_controls)
+        self.queue_widget = QueueWidget(settings_manager_, db_, player_, keybinds_, session_, self.media_controls)
         self.queue_widget_index = self.main_stack.insertWidget(-1, self.queue_widget)
 
         columns = [Column(key, getattr(DBSong, key), key, **GV.TableColumns[key])
@@ -1472,31 +1457,37 @@ class MainWindow(QMainWindow):
         else:
             self.main_stack.setCurrentIndex(self.table_view_index)
 
+    @property
+    def settings(self):
+        return self.settings_manager.get_settings_instance()
+
     # http://stackoverflow.com/a/8736705/6046713
     def save_position_settings(self):
-        self.settings.beginGroup('mainwindow')
+        settings = self.settings_manager.get_unique_settings_inst()
+        settings.beginGroup('mainwindow')
 
-        self.settings.setValue('geometry', self.saveGeometry())
-        self.settings.setValue('savestate', self.saveState())
-        self.settings.setValue('maximized', self.isMaximized())
+        settings.setValue('geometry', self.saveGeometry())
+        settings.setValue('savestate', self.saveState())
+        settings.setValue('maximized', self.isMaximized())
         if not self.isMaximized():
-            self.settings.setValue('pos', self.pos())
-            self.settings.setValue('size', self.size())
+            settings.setValue('pos', self.pos())
+            settings.setValue('size', self.size())
 
-        self.settings.endGroup()
+        settings.endGroup()
 
     def restore_position_settings(self):
-        self.settings.beginGroup('mainwindow')
+        settings = self.settings_manager.get_unique_settings_inst()
+        settings.beginGroup('mainwindow')
 
-        self.restoreGeometry(self.settings.value('geometry', self.saveGeometry()))
-        self.restoreState(self.settings.value('savestate', self.saveState()))
-        self.move(self.settings.value('pos', self.pos()))
-        self.resize(self.settings.value('size', self.size()))
-        maximized = self.settings.value('maximized', self.isMaximized())
+        self.restoreGeometry(settings.value('geometry', self.saveGeometry()))
+        self.restoreState(settings.value('savestate', self.saveState()))
+        self.move(settings.value('pos', self.pos()))
+        self.resize(settings.value('size', self.size()))
+        maximized = settings.value('maximized', self.isMaximized())
         if maximized is True or maximized == 'true':
             self.showMaximized()
 
-        self.settings.endGroup()
+        settings.endGroup()
 
     def closeEvent(self, event):
         self.save_position_settings()
@@ -1519,7 +1510,7 @@ if __name__ == "__main__":
 
     Icons.create_icons()
 
-    settings = _settings.settings
+    settings_manager = SettingsManager()
     session = SessionManager()
 
     metadata_updater = MetadataUpdater(session)
@@ -1529,7 +1520,7 @@ if __name__ == "__main__":
     player = GUIPlayer(None, None, None, session, GUIPlayer.SHUFFLED, db, 0.2, daemon=True)
     keybinds = KeyBinds(global_binds=True)
 
-    main_window = MainWindow(settings, db, player, keybinds, session)
+    main_window = MainWindow(settings_manager, db, player, keybinds, session)
 
     def close_event(lock=None):
         player.exit_player(lock)
@@ -1559,6 +1550,8 @@ if __name__ == "__main__":
     timer.timeout.connect(keybinds.pump_messages)
     timer.setInterval(10)
     timer.start()
+
+    session.db_sessions[threading.get_ident()] = db.get_thread_local_session()
 
     app.exec_()
 

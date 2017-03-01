@@ -1,12 +1,16 @@
+# Global variables
 class GV:
     StartPlaying = 0
     NoAutoStart = 1
     MainQueue = 0
     SecondaryQueue = 1
     MarkedQueue = 2
-    Queues = {0: 'main_queue',
-              1: 'secondary_queue',
-              2: 'marked'}
+    History = 3
+    Queues = {MainQueue: 'main_queue',
+              SecondaryQueue: 'secondary_queue',
+              MarkedQueue: 'marked',
+              History: 'history'}
+
     TableColumns = {'id': {}, 'title': {'editable': True, 'fallback': 'name'},
                     'artist': {'editable': True}, 'duration': {'editable': True},
                     'album': {'editable': True}, 'track': {'editable': True},

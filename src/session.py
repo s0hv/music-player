@@ -6,6 +6,7 @@ import warnings
 from collections import deque
 
 from src.downloader import DownloaderPool
+from src.globals import GV
 
 logger = logging.getLogger('debug')
 
@@ -17,14 +18,14 @@ class SessionManager(threading.Thread):
         self._running = threading.Event()
         self._stop_event = threading.Event()
         self.downloader = DownloaderPool(max_workers=4)
-        self.queues = {}
-        self._excludes = [var for var in vars(self)]
+        self.queues = {k: [] for k in GV.Queues.keys()}
+        self.db_sessions = {}
         # Everything before this are excluded from the saving
+        self._excludes = [var for var in vars(self)]
 
         self._excludes.append('_excludes')
         self._excludes.append('temp_futures')
-        self._excludes.append('queues')
-        self.temp_futures = deque()
+        self.temp_futures = deque()  # This is needed so Qt won't delete some objects
         self._finished = threading.Event()
 
         self.index = 0
@@ -62,6 +63,15 @@ class SessionManager(threading.Thread):
     def stop(self):
         self._running.clear()
         self._stop_event.set()
+
+    def clear_main_queue(self):
+        self.queues.get(GV.MainQueue, []).clear()
+
+    def clear_secondary_queue(self):
+        self.queues.get(GV.SecondaryQueue, []).clear()
+
+    def add_to_queue(self, item, queue=GV.MainQueue):
+        self.queues[queue].append(item)
 
     def _load_session(self):
         variables = {}

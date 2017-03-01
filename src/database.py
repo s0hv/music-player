@@ -19,6 +19,9 @@ from sqlalchemy.orm.attributes import manager_of_class
 from sqlalchemy.orm.properties import ColumnProperty
 
 from src.exiftool import ExifTool
+from src.globals import GV
+from src.queue import SongList
+from src.song import Song
 from src.utils import get_supported_formats, grouper, print_info, concatenate_numbers
 
 logger = logging.getLogger('debug')
@@ -32,7 +35,7 @@ def attribute_names(cls):
 def get_state_dict(instance):
     cls = type(instance)
     mgr = manager_of_class(cls)
-    return dict((key, getattr(instance, key))
+    return cls, dict((key, getattr(instance, key))
                 for key, attr in mgr.local_attrs.items()
                 if isinstance(attr.property, ColumnProperty))
 
@@ -49,27 +52,23 @@ def thread_local_session(func):
     @wraps(func)
     def decorator_func(self, *args, **kwargs):
         session = kwargs.pop('session', None)
-        remove = True
+        remove = False
         if session is None:
             session = self.Session()
-            remove = False
+            remove = True
 
         retval = func(self, *args, **kwargs, session=session)
 
         if kwargs.pop('commit', True):
             session.commit()
+
         if remove:
+            session.close()
             self.Session.remove()
 
         return retval
 
     return decorator_func
-
-
-class SongQueue(deque):
-    def __init__(self, iterable=(), maxlen=None, cls=None):
-        deque.__init__(self, iterable, maxlen)
-        self.cls = cls
 
 
 class SongBase:
@@ -81,8 +80,6 @@ class SongBase:
     name = Column(String)
     link = Column(String)
 
-    def __repr__(self):
-        return self.link
 
 Base = declarative_base(cls=SongBase)
 
@@ -139,11 +136,9 @@ class DBHandler:
 
         self.session_manager = session_manager
         self._load_history()
-        self._second_queue = deque()
-        #self.queue_pos = self.session_manager.index
-        self._real_queue = deque()
-        self.load_queue('data/queue.dat', self._real_queue)
-        self.load_queue('data/second_q.dat', self._second_queue)
+        self.queue_pos = self.session_manager.index
+        self.session_manager.queues[GV.MainQueue] = self.load_queue('data/queue.dat')
+        self.session_manager.queues[GV.SecondaryQueue] = self.load_queue('data/second_q.dat')
         self.playlist = None
 
     def _connect_to_db(self):
@@ -159,7 +154,7 @@ class DBHandler:
         self.engine.execute('PRAGMA encoding = "UTF-8"')
         DBSong.metadata.create_all(self.engine)
 
-        session_factory = sessionmaker(bind=self.engine)
+        session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.Session = scoped_session(session_factory)
 
         return True
@@ -175,9 +170,13 @@ class DBHandler:
 
     @thread_local_session
     def get_state_updated(self, instance, session=None):
-        instance = session.query(type(instance)).filter_by(id=instance.id).first()
-        if instance is not None:
-                return get_state_dict(instance)
+        self.refresh_item(instance, session=session)
+        return get_state_dict(instance)
+
+    @thread_local_session
+    def refresh_item(self, instance, session=None):
+        session.add(instance)
+        session.refresh(instance)
 
     @staticmethod
     def delete_history():
@@ -194,84 +193,107 @@ class DBHandler:
         for item in self.items(QSong, session=session).all():
             song = self.items(DBSong, session=session).filter_by(id=item.real_id).first()
             if isinstance(song, DBSong):
-                self._real_queue.append(song)
+                self.main_queue.append(song)
 
     def shuffle_queue(self):
-        shuffle(self._real_queue)
+        shuffle(self.main_queue)
+
+    @property
+    def main_queue(self):
+        return self.session_manager.queues.get(GV.MainQueue, [])
+
+    @property
+    def secondary_queue(self):
+        return self.session_manager.queues.get(GV.SecondaryQueue, [])
 
     @thread_local_session
     def queue(self, session=None):
-        if len(self._real_queue) == 0:
+        if len(self.main_queue) == 0:
             q = self.items(DBSong, session=session).all()
-            self._real_queue = deque(q)
+            items = []
+            for idx, item in enumerate(q):
+                items.append(Song(item, self, self.session_manager.downloader, idx))
+            self.set_queue(items)
 
-        return self._real_queue
+        return self.main_queue
 
     def clear_main_queue(self):
-        self._real_queue.clear()
+        self.main_queue.clear()
 
     def set_queue(self, queue):
-        self._real_queue = queue
-
-    def secondary_queue(self):
-        return self._second_queue
+        self.session_manager.queues[GV.MainQueue] = queue
 
     def add_to_second_queue(self, item):
-        self._second_queue.append(item)
-        print(self._second_queue)
+        self.secondary_queue.append(item)
 
     def clear_second_queue(self):
-        self._second_queue.clear()
+        self.secondary_queue.clear()
 
     @thread_local_session
     def save_list(self, queue, filename, session=None):
         if len(queue) == 0:
+            try:
+                os.remove(filename)
+            except OSError:
+                pass
             return
 
-        _queue = SongQueue(cls=type(queue[0]))
-        for inst in queue:
-            state_dict = self.get_state_updated(inst, session=session)
-            if state_dict is not None:
+        _queue = SongList(cls=type(queue[0].song))
+        for song in queue:
+            song.refresh()
+            song = song.song
+            cls = type(song)
+            state_dict = {'id': song.id, 'link': song.link}
+            if not isinstance(cls, _queue.cls):
+                _queue.append((cls, state_dict))
+            else:
                 _queue.append(state_dict)
 
         with open(filename, 'wb') as f:
             pickle.dump(_queue, f)
 
     def save_queue(self):
-        self.save_list(self._real_queue, 'data/queue.dat')
+        self.save_list(self.session_manager.queues[GV.MainQueue], 'data/queue.dat')
 
-    @staticmethod
-    def load_queue(filename, queue):
+    @thread_local_session
+    def load_queue(self, filename, queue=None, session=None):
+        if queue is None:
+            queue = []
+
         if not os.path.exists(filename):
-            return
+            return queue
 
         with open(filename, 'rb') as f:
             _queue = pickle.load(f)
 
-        for item in _queue:
-            queue.append(create_from_state_dict(_queue.cls, item))
+        query = session.query(_queue.cls)
+        for idx, item in enumerate(_queue):
+            try:
+                if isinstance(item, tuple):
+                    cls, item = item[0], item[1]
+                    q = session.query(cls)
+                else:
+                    q = query
+            except Exception as e:
+                logger.exception('Could not get song instance.\n %s' % e)
+                continue
+
+            song = q.filter_by(id=item['id'], link = item['link']).first()
+            if song is not None:
+                session.expunge(song)
+                queue.append(Song(song, self, self.session_manager.downloader, idx))
+            else:
+                print('song removed')
+
+        return queue
 
     @thread_local_session
     def shutdown(self, session=None):
         session.commit()
-        self.Session.remove()
 
         self.save_history()
         self.save_queue()
-        print(self._second_queue)
-        if self._second_queue:
-            self.save_list(self._second_queue, 'data/second_q.dat')
-        else:
-            try:
-                os.remove('data/second_q.dat')
-            except OSError:
-                pass
-
-    def get_current_playlist(self):
-        if self.playlist is None:
-            return ()
-
-        return self.playlist.query(PlaylistSong).all()
+        self.save_list(self.secondary_queue, 'data/second_q.dat')
 
     def get_from_history(self, idx=-1):
         try:
@@ -281,7 +303,7 @@ class DBHandler:
 
     def get_from_queue(self, idx=0):
         try:
-            return self._real_queue[idx]
+            return self.main_queue[idx]
         except IndexError:
             return
 
@@ -411,6 +433,9 @@ class DBHandler:
 
         self._add_song(song, session=session, commit=commit)
         return song
+
+    def get_thread_local_session(self):
+        return self.Session()
 
     @thread_local_session
     def get_temp_song(self, name, link, item_type='link', commit=True, session=None, **kwargs):
@@ -617,8 +642,11 @@ class DBHandler:
     @thread_local_session
     def update(self, db_item, name, value, session=None):
         DBItem = type(db_item)
-        item = session.query(DBItem).filter(DBItem.id == db_item.id)
-        item.update({name: value})
+        item = session.query(DBItem).filter_by(id=db_item.id).first()
+        if item is not None:
+            setattr(item, name, value)
+            session.commit()
+
         return item
 
 

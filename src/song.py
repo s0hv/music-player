@@ -214,6 +214,9 @@ class SongBase:
     def metadata_set(self, is_set: bool):
         self.db_handler.update(self.song, 'metadata_set', is_set)
 
+    def refresh(self):
+        self.db_handler.refresh_item(self.song)
+
 
 class Song(SongBase):
     __slots__ = ['index', 'downloader', '_ffmpeg', '_stream', 'metadata',
@@ -251,6 +254,7 @@ class Song(SongBase):
             self.title = self.info.get('title', None)
 
     def trim_cover_art(self):
+        self.refresh()
         if self.cover_art is None:
             return
 
@@ -408,7 +412,6 @@ class Song(SongBase):
         return buffer, fname
 
     def set_cover_art(self, file: str=None, forced=False):
-        # This doesn't commit changes
         if file is None:
             if not forced and self.cover_art is not None and os.path.exists(self.cover_art):
                 return
@@ -532,9 +535,11 @@ class Song(SongBase):
         return self.song.cover_art
 
     @cover_art.setter
-    @update_called
     def cover_art(self, cover_art):
-        self.db_handler.update(self.song, 'cover_art', cover_art)
+        item = self.db_handler.update(self.song, 'cover_art', cover_art)
+        if item is not None:
+            self.song = item
+
         if callable(self.on_cover_art_changed):
             self.on_cover_art_changed(self)
 

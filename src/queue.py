@@ -29,3 +29,9 @@ class LockedQueue(deque):
     @property
     def locked(self):
         return self._lock
+
+
+class SongList(list):
+    def __init__(self, iterable=(), cls=None):
+        list.__init__(self, iterable)
+        self.cls = cls
