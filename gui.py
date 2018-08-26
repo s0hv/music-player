@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QApplication,
                              QStackedWidget)
 
 from src.settings import SettingsManager
-from src.database import DBHandler, DBSong, attribute_names
+from src._database import DBHandler, DBSong, attribute_names
 from src.downloader import DownloaderPool
 from src.globals import GV
 from src.gui.table_view import SQLAlchemyTableModel, Column, SongTable
@@ -310,38 +310,6 @@ class MediaControls(QHBoxLayout):
         finally:
             lock.release()
 
-    @property
-    def stylesheet(self):
-        # http://thesmithfam.org/blog/2010/03/10/fancy-qslider-stylesheet/
-        return """
-            QSlider{
-            background-color: transparent;
-            border-style: outset;
-            border-radius: 10px;
-            }
-
-            QSlider::groove:horizontal {
-            border: 1px solid #bbb;
-            background: white;
-            height: 1px;
-            margin-left: -10px; margin-right: -10px;
-            }
-
-            QSlider::groove:horizontal:hover {
-            height: 5px;
-            }
-
-            QSlider::sub-page:horizontal {
-            background: #304FFE;
-            height: 3px;
-            border-radius: 9px;
-            }
-
-            QSlider::handle:horizontal {
-            background: transparent;
-            border: none;
-            }"""
-
 
 class CoverArt(QLabel):
     def __init__(self, default_image='download.png'):
@@ -598,6 +566,7 @@ class SongList(BaseListWidget):
 
         self.items = {GV.MainQueue: [], GV.SecondaryQueue: [], GV.MarkedQueue: []}
         self.items_updated.connect(self.list_updated)
+        self.items_updated.emit()
 
         self.timer = QTimer()
         self.icon_timer = QTimer()
@@ -1333,10 +1302,6 @@ class QueueWidget(QWidget):
         return requests.get(url).content
 
     def on_change(self, song, in_list=False, index=0, force_repaint=True, add=False):
-        try:
-            song.refresh()
-        except Exception as e:
-            print(e)
         song.set_cover_art()
 
         item = None
@@ -1550,8 +1515,6 @@ if __name__ == "__main__":
     timer.timeout.connect(keybinds.pump_messages)
     timer.setInterval(10)
     timer.start()
-
-    session.db_sessions[threading.get_ident()] = db.get_thread_local_session()
 
     app.exec_()
 

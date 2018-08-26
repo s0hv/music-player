@@ -6,8 +6,8 @@ import pyHook
 from pyHook.HookManager import GetKeyState
 from pyHook.HookManager import HookConstants
 
-from PyQt5.QtCore import QThread
-
+import keyboard
+import win32gui
 import pythoncom
 
 logger = logging.getLogger('debug')
@@ -139,6 +139,73 @@ class KeyBind:
             s += ' + {}'.format(KeyCodes.key_from_id(modifier))
 
         return s
+
+
+class KeB:
+    def __init__(self, hotkey, callback, name, hwnd, *args, global_=False,
+                 threaded=False, **kwargs):
+        self.hotkey = hotkey
+        self._callback = callback
+        self._hwnd = int(hwnd)
+        self.name = name
+        self.threaded = threaded
+        self._func_lock = threading.Lock()
+        self.global_ = global_
+        self.args = args
+        self.kwargs = kwargs
+
+    def run_func(self):
+        if self.lock_func(False):
+            try:
+                if not self.global_:
+                    if win32gui.GetForegroundWindow() != self._hwnd:
+                        return
+
+                if self.threaded:
+                    t = threading.Thread(target=self._callback,
+                                         args=(self.lock, *self.args),
+                                         kwargs=self.kwargs)
+
+                    t.start()
+                else:
+                    self._callback(*self.args, **self.kwargs)
+            except Exception:
+                logger.exception('Keybind error {0.modifiers}: {0.name}'.format(self))
+            finally:
+                self.unlock_func()
+
+    def lock_func(self, blocking=True):
+        return self._func_lock.acquire(blocking)
+
+    def unlock_func(self):
+        if self._func_lock.locked():
+            self._func_lock.release()
+
+    @property
+    def locked(self):
+        return self._func_lock.locked()
+
+    @property
+    def lock(self):
+        return self._func_lock
+
+
+class KB:
+    def __init__(self, hwnd=0):
+        self.hwnd = hwnd
+        self.keybinds = []
+
+    def add_keybind(self, hotkey, callback, name, *args, global_=False, threaded=False,
+                    suppress=False, **kwargs):
+        k = KeB(hotkey, callback, name, self.hwnd, *args, global_=global_, threaded=threaded, **kwargs)
+        keyboard.add_hotkey(hotkey, k.run_func, suppress=suppress)
+        self.keybinds.append(k)
+
+    def pump_messages(self):
+        pythoncom.PumpWaitingMessages()
+
+    def stop(self):
+        keyboard.clear_all_hotkeys()
 
 
 class KeyBinds:

@@ -12,6 +12,10 @@ from PIL import Image
 from src.exiftool import ExifTool
 from src.ffmpeg import FFmpeg
 from src.utils import md5_hash, parse_duration, get_duration, trim_image
+from src.database import CoverArt, Artist, AlbumArtist, Album, Genre, Composer
+from apsw import BusyError, SQLError
+from src.database import _database
+
 
 PA = pyaudio.PyAudio()
 FORMAT = pyaudio.paInt16
@@ -22,12 +26,14 @@ STREAMS = {rate: PA.open(format=FORMAT, channels=CHANNELS, rate=rate, output=Tru
 logger = logging.getLogger('debug')
 
 
-def update_called(func):
+def item_updated(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
-        item = func(self, *args, **kwargs)
-        if item is not None:
-            self.song = item
+        try:
+            func(self, *args, **kwargs)
+            self.song.save()
+        except (BusyError, SQLError, ValueError) as e:
+            print('Could not update song. %s' % e)
 
     return wrapper
 
@@ -39,21 +45,17 @@ class SongBase:
                             'Album': 'album',
                             'Year': 'year',
                             'Duration': 'duration',
-                            'Band': 'band'}
+                            'Band': 'album_artist'}
 
     __slots__ = ['song', 'db_handler', '_duration', '_formatted_duration']
 
-    def __init__(self, song_item, db):
+    def __init__(self, song_item):
         self.song = song_item
-        self.db_handler = db
         self._duration = None
         self._formatted_duration = None
 
     def get_name_and_author(self):
         name = self.title
-        if name is None:
-            name = self.name
-
         author = self.artist
         if author is None:
             author = 'Unknown'
@@ -84,122 +86,120 @@ class SongBase:
         return self.file_type == 'file'
 
     @property
-    def file_type(self):
-        return self.song.file_type
+    def title(self):
+        return self.song.title
 
-    @file_type.setter
-    @update_called
-    def file_type(self, file_type):
-        self.db_handler.update(self.song, 'file_type', file_type)
-
-    @property
-    def name(self):
-        return self.song.name
-
-    @name.setter
-    @update_called
-    def name(self, name):
-        self.db_handler.update(self.song, 'name', name)
+    @title.setter
+    @item_updated
+    def title(self, title):
+        self.song.title = title
 
     @property
     def link(self):
         return self.song.link
 
     @link.setter
-    @update_called
+    @item_updated
     def link(self, link):
-        self.db_handler.update(self.song, 'link', link)
+        self.song.link = link
 
     @property
-    def play_count(self):
-        return self.song.play_count
+    def artist(self):
+        if self.song.artist:
+            return self.song.artist.name
 
-    @play_count.setter
-    @update_called
-    def play_count(self, play_count):
-        self.db_handler.update(self.song, 'play_count', play_count)
-
-    @property
-    def rating(self):
-        return self.song.rating
-
-    @rating.setter
-    @update_called
-    def rating(self, rating):
-        self.db_handler.update(self.song, 'rating', rating)
+    @artist.setter
+    @item_updated
+    def artist(self, artist):
+        artist, c = Artist.get_or_create(name=artist)
+        self.song.artist = artist
 
     @property
     def duration(self):
-        return self.song.duration if self._duration is None else self._duration
+        return self.song.duration
 
     @duration.setter
-    @update_called
+    @item_updated
     def duration(self, duration):
-        self.db_handler.update(self.song, 'duration', duration)
-        self._duration = duration
-
-    @property
-    def title(self):
-        return self.song.title
-
-    @title.setter
-    @update_called
-    def title(self, title):
-        self.db_handler.update(self.song, 'title', title)
+        self.song.duration = duration
 
     @property
     def album(self):
-        return self.song.album
+        if self.song.album:
+            return self.song.album.name
 
     @album.setter
-    @update_called
+    @item_updated
     def album(self, album):
-        self.db_handler.update(self.song, 'album', album)
+        album, c = Album.get_or_create(name=album)
+        self.song.album = album
 
     @property
     def track(self):
         return self.song.track
 
     @track.setter
-    @update_called
+    @item_updated
     def track(self, track: int):
-        self.db_handler.update(self.song, 'track', track)
-
-    @property
-    def artist(self):
-        return self.song.artist
-
-    @artist.setter
-    @update_called
-    def artist(self, artist):
-        self.db_handler.update(self.song, 'artist', artist)
+        self.song.track = track
 
     @property
     def year(self):
         return self.song.year
 
     @year.setter
-    @update_called
+    @item_updated
     def year(self, year: int):
-        self.db_handler.update(self.song, 'year', year)
+        self.song.year = year
 
     @property
-    def band(self):
-        return self.song.band
+    def album_artist(self):
+        if self.song.album_artist:
+            return self.song.album_artist.name
 
-    @band.setter
-    @update_called
-    def band(self, band):
-        self.db_handler.update(self.song, 'band', band)
+    @album_artist.setter
+    @item_updated
+    def album_artist(self, album_artist):
+        album_artist, c = AlbumArtist.get_or_create(name=album_artist)
+        self.song.album_artist = album_artist
+
+    @property
+    def play_count(self):
+        return self.song.play_count
+
+    @play_count.setter
+    @item_updated
+    def play_count(self, play_count):
+        self.song.play_count = play_count
+
+    @property
+    def rating(self):
+        return self.song.rating
+
+    @rating.setter
+    @item_updated
+    def rating(self, rating):
+        self.song.rating = rating
+
+    @property
+    def file_type(self):
+        return self.song.file_type
+
+    @file_type.setter
+    @item_updated
+    def file_type(self, file_type):
+        self.song.file_type = file_type
 
     @property
     def cover_art(self):
-        return self.song.cover_art
+        if self.song.cover_art:
+            return self.song.cover_art.file
 
     @cover_art.setter
-    @update_called
+    @item_updated
     def cover_art(self, cover_art):
-        self.db_handler.update(self.song, 'cover_art', cover_art)
+        cover_art, c = CoverArt.get_or_create(file=cover_art)
+        self.song.cover_art = cover_art
 
     @property
     def added(self):
@@ -210,22 +210,29 @@ class SongBase:
         return self.song.metadata_set
 
     @metadata_set.setter
-    @update_called
+    @item_updated
     def metadata_set(self, is_set: bool):
-        self.db_handler.update(self.song, 'metadata_set', is_set)
+        self.song.metadata_set = is_set
 
-    def refresh(self):
-        self.db_handler.refresh_item(self.song)
+    def __getattr__(self, item):
+        if item in self.__slots__:
+            return self.__getattribute__(item)
+        elif item == 'length':
+            return self.duration
+
+        else:
+            return None
 
 
 class Song(SongBase):
     __slots__ = ['index', 'downloader', '_ffmpeg', '_stream', 'metadata',
                  '_formatted_duration', 'info', 'future', '_dl_error','_dl_ready',
-                 '_downloading', 'on_cover_art_changed', 'after_download']
+                 '_downloading', 'on_cover_art_changed', 'after_download',
+                 'is_link']
 
-    def __init__(self, db_item, db, downloader, index=-1, on_cover_art_change=None,
+    def __init__(self, db_item, downloader, index=-1, on_cover_art_change=None,
                  after_download=None, **kwargs):
-        super().__init__(db_item, db)
+        super().__init__(db_item)
 
         self.index = index
         self.on_cover_art_changed = on_cover_art_change
@@ -240,6 +247,7 @@ class Song(SongBase):
         self._dl_error = None
         self._dl_ready = None
         self._downloading = None
+        self.is_link = not self.is_file
 
     def set_file(self, file):
         self._ffmpeg.file = file
@@ -254,7 +262,6 @@ class Song(SongBase):
             self.title = self.info.get('title', None)
 
     def trim_cover_art(self):
-        self.refresh()
         if self.cover_art is None:
             return
 
@@ -326,13 +333,19 @@ class Song(SongBase):
         return buffer, fname
 
     def set_duration(self, duration=None):
-        if duration is None or isinstance(self.duration, int):
-            duration = get_duration(self.file)
+        if duration is None:
+            if self.is_link:
+                duration = self.info.get('duration')
+            else:
+                duration = get_duration(self.file)
+
             if duration is None:
                 return
 
         if not isinstance(duration, int) and not isinstance(duration, float):
-            raise ValueError('Duration must be int or float')
+            print('Duration must be int or float')
+            logger.debug('Duration must be int or float')
+            return
 
         self.duration = duration
 
@@ -346,6 +359,13 @@ class Song(SongBase):
 
         info, filename = result
         self.set_info(info)
+        if filename is False:
+            filename = info.get('url')
+            if filename is None:
+                self._dl_error.set()
+                self._dl_ready.set()
+                return
+
         self.set_file(filename)
         self.set_duration()
         self.set_cover_art()
@@ -353,7 +373,7 @@ class Song(SongBase):
         if callable(self.after_download):
             self.after_download(self)
 
-    def download_song(self):
+    def download_song(self, download=True):
         if self._dl_ready is None:
             self._dl_error = threading.Event()
             self._dl_ready = threading.Event()
@@ -372,7 +392,12 @@ class Song(SongBase):
                 return
 
             self._downloading.set()
-            future = self.downloader.download(self.link)
+            self.is_link = not download
+
+            if self.is_link:
+                self.ffmpeg.before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -timeout 10'
+
+            future = self.downloader.download(self.link, download=download)
             future.add_done_callback(self.after_dl)
 
     def _get_cover_art_after_info(self, future):
@@ -413,7 +438,6 @@ class Song(SongBase):
 
     def set_cover_art(self, file: str=None, forced=False):
         if file is None:
-            self.refresh()
             if not forced and self.cover_art is not None and os.path.exists(self.cover_art):
                 return
 
@@ -446,6 +470,9 @@ class Song(SongBase):
             self.cover_art = file
 
     def set_metadata(self):
+        if self.is_link or not isinstance(self.file, str):
+            return
+
         file = self._ffmpeg.file
         exiftool = ExifTool()
         exiftool.start()
@@ -525,7 +552,10 @@ class Song(SongBase):
 
     @property
     def file(self):
-        return self._ffmpeg.file
+        if self.is_file:
+            return self.link
+        else:
+            return self._ffmpeg.file
 
     @property
     def ffmpeg(self):
@@ -533,13 +563,14 @@ class Song(SongBase):
 
     @property
     def cover_art(self):
-        return self.song.cover_art
+        if self.song.cover_art:
+            return self.song.cover_art.file
 
     @cover_art.setter
+    @item_updated
     def cover_art(self, cover_art):
-        item = self.db_handler.update(self.song, 'cover_art', cover_art)
-        if item is not None:
-            self.song = item
+        cover_art, created = CoverArt.get_or_create(file=cover_art)
+        self.song.cover_art = cover_art
 
         if callable(self.on_cover_art_changed):
             self.on_cover_art_changed(self)

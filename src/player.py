@@ -11,10 +11,9 @@ from collections import deque
 
 import pyaudio
 
-from src import database
 from src.downloader import DownloaderPool
 from src.globals import GV
-from src.queue import LockedQueue
+from src.queues import LockedQueue
 from src.song import Song
 from src.utils import print_info, get_duration
 
@@ -115,6 +114,10 @@ class StreamPlayer(threading.Thread):
             logger.debug('Removed %s loops from start' % self._loops)
 
         while not self._end.is_set():
+
+            if self.seeking.is_set():
+                self.seeking.wait()
+
             if not self._resume.is_set():
                 while self.can_buffer:
                     self._buffer_next()
@@ -223,7 +226,7 @@ class StreamPlayer(threading.Thread):
 
 
 class MusicPlayer(threading.Thread):
-    def __init__(self, db: database.DBHandler, default_vol=0.5, **kwargs):
+    def __init__(self, db, default_vol=0.5, **kwargs):
         super().__init__(**kwargs)
         self.volume = default_vol
         self.stream_player = None
@@ -336,16 +339,6 @@ class MusicPlayer(threading.Thread):
     def running(self):
         return not self._stop.is_set()
 
-    @staticmethod
-    def _set_dur(item, file):
-        duration = get_duration(file)
-        if duration is None:
-            return
-
-        item.duration = duration
-
-        return duration
-
     def _init(self):
         self.current = None
         self.next = None
@@ -452,7 +445,7 @@ class CMDPlayer(MusicPlayer):
         while self.running:
             self._next_ready.wait()
             self._set_up_current(future)
-            name = self.cmd_text(self.current.name)
+            name = self.cmd_text(self.current.title)
             print('\rNow playing: {}'.format(name))
             self.next_name = ''
             self.printer.next_name = ''
@@ -491,7 +484,8 @@ class GUIPlayer(MusicPlayer):
     SHUFFLED = 1
     AUTO_DJ = 2
 
-    def __init__(self, duration_fn, on_next, on_start, session, mode=AUTO_DJ, *args, **kwargs):
+    def __init__(self, duration_fn, on_next, on_start, session, settings_manager,
+                 mode=AUTO_DJ, *args, **kwargs):
         """
 
         Args:
@@ -503,6 +497,8 @@ class GUIPlayer(MusicPlayer):
                 A callable that is called after stream_player.start() has been called
             session:
                 The sessionmanager that this will use. See class SessionManager in src/session
+            settings_manager:
+                SettingsManager that will be used to get settings values
             mode:
                 The mode in which new _songs are gotten. All of the options for this
                 are global variables in this class
@@ -517,6 +513,7 @@ class GUIPlayer(MusicPlayer):
         self.on_start = on_start
         self.session = session
         self.queue_mode = mode
+        self.settings_manager = settings_manager
 
         self.future = None
         self.index = 0
@@ -529,6 +526,10 @@ class GUIPlayer(MusicPlayer):
         self._next_queue = LockedQueue()
         self.current = None
         self.unpaused = threading.Event()
+
+    @property
+    def settings(self):
+        return self.settings_manager.get_settings_instance()
 
     def skip_to(self, idx, song_item=None):
         if idx < 0:
@@ -545,9 +546,8 @@ class GUIPlayer(MusicPlayer):
             song = song_item.song
 
         logger.debug('skip_to %s' % idx)
-        print(song_item)
+        print(song.title, song.link)
         self._next_queue.force_append(song)
-        self.db.queue_pos = idx + 1
         self.index = idx
         self.play_next_song()
         self.unpaused.set()
@@ -576,12 +576,12 @@ class GUIPlayer(MusicPlayer):
             self.unpaused.clear()
             return
 
-        song.download_song()
+        song.download_song(download=self.settings.value('download', True))
         self._next_queue.append(song)
 
     def _init(self):
         if self.queue is None:
-            self.queue = self.session.queues.get(GV.MainQueue, deque())
+            self.queue = self.session.queues.get(GV.MainQueue, [])
         self.index = self.session.index
 
     def _audio_loop(self):
@@ -593,17 +593,11 @@ class GUIPlayer(MusicPlayer):
                 song = self.queue[self.index]
             except IndexError:
                 pass
-        else:
-            history = self.db.history
-            try:
-                song = history.pop()
-            except IndexError:
-                pass
 
         if song is not None:
             self._next_queue.append(song)
             self.on_next.emit(song, self.queue_mode == self.SHUFFLED,
-                              self.index, False, self.queue_mode == self.AUTO_DJ)
+                              self.index, False)
 
         f = open('errors.txt', 'a')
 
@@ -620,12 +614,13 @@ class GUIPlayer(MusicPlayer):
                 self.get_next()
                 continue
 
-            logger.debug('Downloading song {} {}'.format(self.current.name, self.current.link))
-            self.current.download_song()
+            logger.debug('Downloading song {} {}'.format(self.current.title, self.current.link))
+            self.current.download_song(download=self.settings.value('download', True))
             logger.debug('DL complete. Calling on next')
             try:
-                self.on_next.emit(self.current, self.queue_mode == self.SHUFFLED and self.current.index >= 0,
-                                  self.current.index, True, self.queue_mode == self.AUTO_DJ)
+                self.on_next.emit(self.current,
+                                  self.queue_mode == self.SHUFFLED and self.current.index >= 0,
+                                  self.current.index, True)
             except Exception as e:
                 logger.exception('on_next exception %s' % e)
 

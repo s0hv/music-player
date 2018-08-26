@@ -25,6 +25,26 @@ def check_if_metadata_set(song):
     return is_set
 
 
+def metadata_to_song_vars(mt, metadata_conversions):
+    _vars = {v: mt.get(k) for k, v in metadata_conversions.items() if mt.get(k, None) is not None}
+    return _vars
+
+
+def get_file_metadata(file, exiftool=None):
+    ex = exiftool
+    if exiftool is None:
+        ex = ExifTool()
+        ex.start()
+
+    mt = ex.get_metadata(file)
+    song_vars = metadata_to_song_vars(mt, Song.METADATA_CONVERSIONS)
+
+    if exiftool is None:
+        ex.terminate()
+
+    return song_vars
+
+
 def update_song(song, forced=False, exiftool=None):
     if song.metadata_set and not forced:
         return
@@ -61,7 +81,7 @@ def update_song(song, forced=False, exiftool=None):
             except TimeoutError:
                 return
 
-            if 'duration' in song.info and song.duration is None:
+            if 'duration' in song.info and song.duration <= 0:
                 song.duration = song.info['duration']
 
             if 'title' in song.info:
@@ -73,7 +93,6 @@ def update_song(song, forced=False, exiftool=None):
             if 'upload_date' in song.info:
                 song.year = int(song.info['upload_date'][:4])
 
-    song.metadata_set = check_if_metadata_set(song)
     return True
 
 
@@ -91,7 +110,7 @@ class BaseMetadataUpdater(threading.Thread):
 
     def add_to_update(self, songs, forced=False):
         if isinstance(songs, Song):
-            songs = [songs]
+            songs = deque([songs])
 
         if len(songs) == 0:
             return

@@ -67,10 +67,14 @@ class ExifTool:
 
         return output.strip()[:-len(self.sentinel)]
 
-    def get_cover_art(self, file):
-        args = (b"-Picture", )
-        pic = self.execute(*args, self.get_filenames(file))
-        return pic
+    def get_cover_art(self, *files):
+        args = (b"-Picture", b"-j")
+        pics = self.execute(*args, self.get_filenames(*files)).decode('utf-8')
+        try:
+            return json.loads(pics)
+        except Exception as e:
+            logger.info('Could not get metadata. {}\n{}\n{}'.format(', '.join(files), pics, e))
+            return {}
 
     def get_metadata(self, *filenames):
         args = (b"-j",)

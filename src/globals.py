@@ -1,3 +1,6 @@
+import os
+
+
 # Global variables
 class GV:
     StartPlaying = 0
@@ -16,6 +19,10 @@ class GV:
                     'album': {'editable': True}, 'track': {'editable': True},
                     'year': {'editable': True}, 'band': {'editable': True},
                     'play_count': {'editable': True}, 'rating': {'editable': True}}
+
+    DatabaseName = os.path.join(os.getcwd(), 'databases', 'songs.db')
+    DefaultCoverArt = 'download.png'
+    StarSize = (20, 20)
 
 
 class DefaultSettings:

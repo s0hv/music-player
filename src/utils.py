@@ -1,14 +1,23 @@
 import hashlib
 import os
+from io import BytesIO
 import shlex
 import subprocess
 import sys
 import warnings
 from itertools import zip_longest
+import base64
 from signal import *
 import ntpath
+import binascii
 
 from PIL import Image, ImageChops
+
+from src.exiftool import ExifTool
+
+
+import logging
+logger = logging.getLogger('debug')
 
 
 # Print iterations progress
@@ -25,7 +34,7 @@ def print_info(iteration, total, total_duration='', no_duration=False, prefix=''
     """
     iteration = int(iteration) if decimals <= 0 else round(iteration, decimals)
     if no_duration:
-        time_string = ('{0:.' + str(decimals) + 'f}%').format(float(iteration)/total * 100)
+        time_string = ('{0:.' + str(decimals) + 'f}% {}/{}').format(float(iteration)/total * 100, iteration, total)
     else:
         if not total_duration:
             time_string = parse_duration(iteration, total, decimals)
@@ -106,7 +115,7 @@ def get_duration(file):
         out, err = p.communicate()
         dur = round(float(out), 2)
     except Exception as e:
-        print('Exception while getting duration' % e)
+        print('Exception while getting duration. %s' % e)
         return None
 
     return dur
@@ -123,16 +132,21 @@ def get_supported_formats():
     path = os.path.join(os.getcwd(), 'cache', 'formats.txt')
     lines = read_formats(path)
     if lines is not None:
-        return
+        return lines
 
-    p = subprocess.Popen('ffmpeg -demuxers'.split(' '), stdout=subprocess.PIPE)
+    p = subprocess.Popen('ffmpeg -formats'.split(' '), stdout=subprocess.PIPE)
     out, err = p.communicate()
     out = out.decode('utf-8')
     formats = []
     for l in out.splitlines()[4:]:
         l = l.strip()
         try:
-            formats.append(l[3:].split(' ')[0])
+            demuxer = 'D' in l[0:3]
+            if not demuxer:
+                continue
+
+            format_ = map(str.strip, l[3:].split(' ')[0].split(','))
+            formats.append('\n'.join(format_))
         except Exception as e:
             print('failed to add format %s\n%s' % (l, e))
 
@@ -144,15 +158,14 @@ def get_supported_formats():
 
 def get_supported_audio_formats():
     audio_formats = os.path.join(os.getcwd(), 'src', 'audio_format_list.txt')
-    if os.path.exists(audio_formats):
+    formats = get_supported_formats()
+    if not os.path.exists(audio_formats):
         warnings.warn('audio_format_list.txt not found in src folder')
-        return get_supported_formats()
+        return formats
 
     supported_formats = os.path.join(os.getcwd(), 'cache', 'audio_formats.txt')
     if not os.path.exists(supported_formats):
-        with open(supported_formats) as f:
-            supported = set(f.read().split('\n'))
-
+        supported = set(formats)
         with open(audio_formats) as f:
             listed = set(f.read().split('\n'))
 
@@ -223,6 +236,22 @@ def md5_hash(file):
     return md5.hexdigest()
 
 
+def check_correct_extension(file, formats):
+    ext = path_leaf(file).split('.')
+    if len(ext) < 2:
+        return True
+
+    if formats is None:
+        raise Exception('Format file is not generated. Files cannot be checked')
+
+    ext = ext[-1]
+    if ext in formats:
+        return True
+    else:
+        logger.debug('Skipping file %s' % file)
+        return False
+
+
 def trim_image(im):
     bg = Image.new(im.mode, im.size, im.getpixel((0,0)))
     diff = ImageChops.difference(im, bg)
@@ -230,3 +259,61 @@ def trim_image(im):
     bbox = diff.getbbox()
     if bbox:
         return im.crop(bbox)
+
+
+def get_file_cover_art(metadata, file):
+    path = os.path.join(os.getcwd(), 'cache', 'cover_art', 'embedded')
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+    if 'Picture' not in metadata:
+        exiftool = ExifTool()
+        exiftool.start()
+
+        pic = exiftool.get_cover_art(file)
+        exiftool.terminate()
+
+        if not pic:
+            return None, None
+
+    else:
+        pic = metadata['Picture']
+
+    buffer = BytesIO(pic)
+    md5 = md5_hash(buffer)
+    buffer.seek(0)
+
+    fname = os.path.join(path, md5)
+    if os.path.exists(fname):
+        return fname
+
+    with open(fname, 'wb') as f:
+        for chunk in iter(lambda: buffer.read(4096), b""):
+            f.write(chunk)
+
+    return fname
+
+
+def b64_to_cover_art(s):
+    path = os.path.join(os.getcwd(), 'cache', 'cover_art', 'embedded')
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+    if s[:7] == 'base64:':
+        s = s[7:]
+
+    b = binascii.a2b_base64(s)
+    buffer = BytesIO(b)
+
+    md5 = md5_hash(buffer)
+    buffer.seek(0)
+
+    fname = os.path.join(path, md5)
+    if os.path.exists(fname):
+        return fname
+
+    with open(fname, 'wb') as f:
+        for chunk in iter(lambda: buffer.read(4096), b""):
+            f.write(chunk)
+
+    return fname

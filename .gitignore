@@ -6,6 +6,7 @@ test.jpg
 test.mp3
 test.bat
 PyQt5_modeltest/
+gui_test.py
 
 # Logs #
 ########
@@ -16,6 +17,7 @@ errors.txt
 *.dat
 *.db
 cache/formats.txt
+cache/audio_formats.txt
 
 # Cache files #
 ###############

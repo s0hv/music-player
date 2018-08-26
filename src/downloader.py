@@ -28,6 +28,9 @@ opts = {
     'nooverwrites': True}
 
 
+youtube_dl.utils.bug_reports_message = lambda: ''
+
+
 class DownloaderPool:
     def __init__(self, max_workers=3):
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -43,8 +46,8 @@ class DownloaderPool:
             os.mkdir(cache)
         self.cache = Cache(cache)
 
-    def download(self, link):
-        return self.executor.submit(self._get_song, link)
+    def download(self, link, **kwargs):
+        return self.executor.submit(self._get_song, link, **kwargs)
 
     def get_info(self, link, flat=False):
         return self.executor.submit(self._get_info, link, flat=flat)
@@ -62,12 +65,16 @@ class DownloaderPool:
         else:
             return info
 
-    def _get_song(self, link, flat=False):
+    def _get_song(self, link, flat=False, **kwargs):
         try:
-            info = functools.partial(self.ytdl.extract_info, link)()
+            info = functools.partial(self.ytdl.extract_info, link, **kwargs)()
         except Exception as e:
             print('Exception while downloading file. %s' % e)
         else:
             fname = self.ytdl.prepare_filename(info)
-            self.cache.add_file(fname)
+            if os.path.exists(fname):
+                self.cache.add_file(fname)
+            else:
+                fname = False
+
             return info, fname

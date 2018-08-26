@@ -1,6 +1,5 @@
 import threading
 
-from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import QSettings
 
 
@@ -28,10 +27,3 @@ class SettingsManager:
 
     def get_unique_settings_inst(self):
         return Settings(self.format, self.scope, self.organization, self.application)
-
-
-class SettingsWindow(QWidget):
-    def __init__(self, settings, session, *args):
-        super().__init__(*args)
-        self.settings = settings
-        self.session = session

@@ -19,7 +19,8 @@ class SessionManager(threading.Thread):
         self._resume_event = threading.Event()
         self.downloader = DownloaderPool(max_workers=4)
         self.queues = {k: [] for k in GV.Queues.keys()}
-        self.db_sessions = {}
+        self.scanned_dirs = []
+        self.updated_playlists = []
         # Everything before this are excluded from the saving
         self._excludes = [var for var in vars(self)]
 
@@ -28,8 +29,6 @@ class SessionManager(threading.Thread):
         self.temp_futures = deque()  # This is needed so Qt won't delete some objects
         self._finished = threading.Event()
         self.successful_stop = False
-
-        self.scanned_dirs = []
 
         self.index = 0
         self.main_index = 0
