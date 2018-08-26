@@ -7,6 +7,10 @@ test.mp3
 test.bat
 PyQt5_modeltest/
 gui_test.py
+*.log
+.idea/
+*.lnk
+test2.py
 
 # Logs #
 ########
